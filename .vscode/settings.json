@@ -1,5 +1,8 @@
 {
-    "idf.currentSetup": "/home/hoangkhacanh/.espressif/v5.3.5/esp-idf",
-    "idf.port": "/dev/ttyUSB0",
-    "idf.flashType": "UART"
+  "idf.currentSetup": "/home/hoangkhacanh/.espressif/v5.3.5/esp-idf",
+  "idf.port": "/dev/ttyUSB0",
+  "idf.flashType": "UART",
+  "idf.customExtraVars": "{\"ESPTOOL_BEFORE\": \"default_reset\", \"ESPTOOL_AFTER\": \"hard_reset\"}",
+ 
+
 }

@@ -3,13 +3,17 @@ idf_component_register(SRCS "main.c"
                             "src/doamdat/doamdat.c"
                             "src/mucnuoc/mucnuoc.c"
                             "src/dht11/dht11.c"
-                            "src/mq2/mq2.c"      
+                            "src/mq2/mq2.c"   
+                            "src/cambienmua/cambienmua.c"
+                            "src/ble_manager/ble_manager.c"
+                            "src/maybom/maybom.c"
                     INCLUDE_DIRS "." 
                                  "src/cambienquangtro"
                                  "src/doamdat"
                                  "src/mucnuoc"
                                  "src/dht11"
-                                 "src/mq2"         
-                    REQUIRES esp_adc
-                             driver
-                             esp_timer)
+                                 "src/mq2"  
+                                 "src/cambienmua"
+                                 "src/ble_manager"
+                                 "src/maybom"
+                    REQUIRES esp_adc driver esp_timer bt nvs_flash)

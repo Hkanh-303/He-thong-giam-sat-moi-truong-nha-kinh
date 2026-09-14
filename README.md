@@ -24,3 +24,18 @@
    Vcc  ->  5v 
    Gnd  -> Gnd
    A0   -> GPIO 35 (ADC1_CHANNEL_7)
+
+   6. Kết nối esp32 với cảm biến mực nước
+   Vcc  ->  3.3v 
+   Gnd  -> Gnd
+   A0   -> GPIO 34 (ADC1_CHANNEL_6)
+
+   7. Kết nối esp32 với cảm biến mưa
+   Vcc  ->  3.3v 
+   Gnd  -> Gnd
+   A0   -> VN (ADC1_CHANNEL_3)
+
+8. máy bơm
+  vcc -> 5v
+  gnd
+  in1 -> gpio18
