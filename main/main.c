@@ -1,5 +1,3 @@
-#include <stdio.h>
-
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -16,10 +14,64 @@
 
 // Thu vien may bom
 #include "maybom.h"
-#include "wifi_sender.h"
+#include "wifi.h"
+#include "firebase.h"
 
 static adc_oneshot_unit_handle_t my_adc_handle = NULL;
 static const char *TAG = "MAIN_APP";
+
+typedef struct {
+    int light_percent;
+    int soil_moisture_percent;
+    int water_level_percent;
+    int mq2_signal_percent;
+    float temperature_c;
+    float humidity_percent;
+    bool dht11_valid;
+    bool pump_is_on;
+    bool has_data;
+} firebase_sensor_snapshot_t;
+
+static firebase_sensor_snapshot_t s_sensor_snapshot = {0};
+static portMUX_TYPE s_sensor_spinlock = portMUX_INITIALIZER_UNLOCKED;
+
+static void firebase_upload_task(void *pvParameters)
+{
+    (void)pvParameters;
+    ESP_LOGI(TAG, "Task Firebase upload da khoi dong, doi ket noi Wi-Fi...");
+
+    // Doi den khi Wi-Fi da ket noi thanh cong
+    while (!wifi_is_connected()) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    ESP_LOGI(TAG, "Wi-Fi da san sang, bat dau chu ky day du lieu Firebase!");
+
+    while (1) {
+        // Gui du lieu moi 15 giay
+        vTaskDelay(pdMS_TO_TICKS(15000));
+
+        firebase_sensor_snapshot_t data_to_send;
+        taskENTER_CRITICAL(&s_sensor_spinlock);
+        data_to_send = s_sensor_snapshot;
+        taskEXIT_CRITICAL(&s_sensor_spinlock);
+
+        if (data_to_send.has_data) {
+            esp_err_t res = firebase_send_sensor_data(
+                data_to_send.light_percent,
+                data_to_send.soil_moisture_percent,
+                data_to_send.water_level_percent,
+                data_to_send.mq2_signal_percent,
+                data_to_send.temperature_c,
+                data_to_send.humidity_percent,
+                data_to_send.dht11_valid,
+                data_to_send.pump_is_on
+            );
+            if (res != ESP_OK) {
+                ESP_LOGW(TAG, "Ket qua gui Firebase: %s", esp_err_to_name(res));
+            }
+        }
+    }
+}
 
 // Chuan hoa gia tri ADC 12-bit thanh phan tram cua thang do 0-4095.
 static int adc_to_percent(int adc_value) {
@@ -28,16 +80,14 @@ static int adc_to_percent(int adc_value) {
     return (adc_value * 100 + 2047) / 4095;
 }
 
-static void format_json_int(char *buffer, size_t buffer_size, int value) {
-    if (value < 0) {
-        snprintf(buffer, buffer_size, "null");
-    } else {
-        snprintf(buffer, buffer_size, "%d", value);
-    }
-}
-
 void app_main(void){
     ESP_LOGI(TAG, "Khoi dong he thong SmartPlan");
+
+    esp_err_t wifi_init_result = wifi_init();
+    if (wifi_init_result != ESP_OK) {
+        ESP_LOGW(TAG, "Khoi tao Wi-Fi loi (%s); van tiep tuc doc cam bien",
+                 esp_err_to_name(wifi_init_result));
+    }
 
     // 1. Khoi tao cam bien quang tro
     esp_err_t init_result = quangtro_init(&my_adc_handle, QUANGTRO_CHANNEL);
@@ -79,9 +129,8 @@ void app_main(void){
     maybom_init(MAYBOM_PIN);
     ESP_LOGI(TAG, "Khoi tao may bom (GPIO %d) thanh cong", MAYBOM_PIN);
 
-    if (wifi_sender_init() != ESP_OK) {
-        ESP_LOGE(TAG, "Khoi tao Wi-Fi that bai; van tiep tuc doc cam bien");
-    }
+    // Tao FreeRTOS task rieng voi stack 8KB de day du lieu len Firebase ma khong chan vong lap cam bien
+    xTaskCreate(firebase_upload_task, "fb_upload_task", 8192, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "Bat dau doc gia tri toan bo cam bien...");
 
@@ -157,37 +206,18 @@ void app_main(void){
             ESP_LOGW(TAG, "Khong the doc du lieu tu DHT11");
         }
 
-        char light_json[12];
-        char soil_json[12];
-        char water_json[12];
-        char mq2_json[12];
-        char temperature_json[20];
-        char humidity_json[20];
-        char json_payload[256];
-        format_json_int(light_json, sizeof(light_json), light_percent);
-        format_json_int(soil_json, sizeof(soil_json), soil_moisture_percent);
-        format_json_int(water_json, sizeof(water_json), water_level_percent);
-        format_json_int(mq2_json, sizeof(mq2_json), mq2_signal_percent);
-        if (dht11_valid) {
-            snprintf(temperature_json, sizeof(temperature_json), "%.1f", nhiet_do);
-            snprintf(humidity_json, sizeof(humidity_json), "%.1f", do_am);
-        } else {
-            snprintf(temperature_json, sizeof(temperature_json), "null");
-            snprintf(humidity_json, sizeof(humidity_json), "null");
-        }
-
-        snprintf(json_payload, sizeof(json_payload),
-                 "{\"light_adc_percent\":%s,\"soil_moisture_percent_estimated\":%s,"
-                 "\"water_level_adc_percent\":%s,\"mq2_signal_adc_percent\":%s,"
-                 "\"temperature_c\":%s,\"humidity_percent\":%s,\"pump_on\":%s}",
-                 light_json, soil_json, water_json, mq2_json,
-                 temperature_json, humidity_json, pump_is_on ? "true" : "false");
-
-        ESP_LOGI(TAG, "JSON POST /sensors: %s", json_payload);
-        esp_err_t send_result = wifi_sender_post_json(json_payload);
-        if (send_result != ESP_OK && send_result != ESP_ERR_INVALID_STATE) {
-            ESP_LOGW(TAG, "Khong gui duoc mau du lieu len Raspberry Pi");
-        }
+        // Cap nhat snapshot du lieu moi nhat cho firebase_upload_task
+        taskENTER_CRITICAL(&s_sensor_spinlock);
+        s_sensor_snapshot.light_percent = light_percent;
+        s_sensor_snapshot.soil_moisture_percent = soil_moisture_percent;
+        s_sensor_snapshot.water_level_percent = water_level_percent;
+        s_sensor_snapshot.mq2_signal_percent = mq2_signal_percent;
+        s_sensor_snapshot.temperature_c = nhiet_do;
+        s_sensor_snapshot.humidity_percent = do_am;
+        s_sensor_snapshot.dht11_valid = (dht11_valid != 0);
+        s_sensor_snapshot.pump_is_on = (pump_is_on != 0);
+        s_sensor_snapshot.has_data = true;
+        taskEXIT_CRITICAL(&s_sensor_spinlock);
 
         ESP_LOGI(TAG, "-----------------------------------");
         vTaskDelay(pdMS_TO_TICKS(3000));

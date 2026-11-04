@@ -40,17 +40,11 @@
   gnd
   in1 -> gpio18
 
-## Gửi dữ liệu ESP32 sang Raspberry Pi qua Wi-Fi
+## Build và nạp firmware
 
-ESP32 chạy chế độ Wi-Fi station, kết nối vào điểm phát Wi-Fi của Raspberry Pi rồi gửi HTTP POST dạng JSON đến cổng 5000.
+```bash
+idf.py build
+idf.py -p PORT flash monitor
+```
 
-1. Chép `main/src/raspberry_pi/receiver.py` lên Raspberry Pi và chạy:
-   ```sh
-   python3 receiver.py
-   ```
-   Mỗi mẫu nhận được sẽ hiện trên terminal. Server lắng nghe tại `/sensors` và có endpoint kiểm tra `/health`.
-2. Lấy địa chỉ IP mà Pi dùng trên mạng Wi-Fi của nó bằng `hostname -I`.
-3. Sửa `WIFI_SSID`, `WIFI_PASSWORD` và `RPI_SENSOR_URL` trong `main/src/wifi_sender/wifi_sender_config.h`. Đặt URL thành `http://<IP-cua-Pi>:5000/sensors`.
-4. Build và nạp lại firmware. ESP32 sẽ thử kết nối lại nếu Wi-Fi bị ngắt; dữ liệu được gửi mỗi chu kỳ đọc cảm biến.
-
-Các trường analog được gửi dưới dạng phần trăm thang ADC; độ ẩm đất là giá trị ước tính. Nhiệt độ, độ ẩm không khí và trạng thái bơm được gửi riêng trong JSON.
+Thay `PORT` bằng cổng nối với ESP32.
