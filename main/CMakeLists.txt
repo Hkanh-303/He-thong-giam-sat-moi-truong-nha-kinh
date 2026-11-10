@@ -16,4 +16,4 @@ idf_component_register(SRCS "main.c"
                                  "src/maybom"
                                  "src/wifi_sender"
                                  "src/fb"
-                    REQUIRES esp_adc esp_driver_gpio driver esp_timer esp_wifi esp_event esp_netif esp_http_client mbedtls nvs_flash)
+                    REQUIRES esp_adc esp_driver_gpio driver esp_timer esp_wifi esp_event esp_netif esp_http_client mbedtls nvs_flash json)

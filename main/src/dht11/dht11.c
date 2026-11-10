@@ -2,10 +2,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
+#include "esp_rom_sys.h"
 #include "esp_log.h"
 
 static const char *TAG = "DHT11_SENSOR";
 static gpio_num_t dht_pin;
+static portMUX_TYPE dht_lock = portMUX_INITIALIZER_UNLOCKED;
 
 void dht11_init(gpio_num_t pin) {
     dht_pin = pin;
@@ -28,13 +30,11 @@ void dht11_init(gpio_num_t pin) {
 
 // Hàm hỗ trợ đo độ dài xung
 static int wait_for_state(int state, int timeout_us) {
-    int time_waited = 0;
+    int64_t start = esp_timer_get_time();
     while (gpio_get_level(dht_pin) != state) {
-        if (time_waited > timeout_us) return -1;
-        esp_rom_delay_us(1);
-        time_waited++;
+        if (esp_timer_get_time() - start >= timeout_us) return -1;
     }
-    return time_waited;
+    return (int)(esp_timer_get_time() - start);
 }
 
 esp_err_t dht11_read(float *temperature, float *humidity) {
@@ -44,27 +44,28 @@ esp_err_t dht11_read(float *temperature, float *humidity) {
     gpio_set_direction(dht_pin, GPIO_MODE_OUTPUT);
     gpio_set_level(dht_pin, 0);
     esp_rom_delay_us(20000); // Kéo xuống ít nhất 18ms
+    taskENTER_CRITICAL(&dht_lock);
     gpio_set_level(dht_pin, 1);
-    esp_rom_delay_us(40);    // Kéo lên 20-40us
+    esp_rom_delay_us(30);    // Kéo lên 20-40us
     
     // 2. Chuyển sang đọc tín hiệu phản hồi
     gpio_set_direction(dht_pin, GPIO_MODE_INPUT);
     
     // Chờ DHT11 kéo xuống
-    if (wait_for_state(0, 80) == -1) return ESP_ERR_TIMEOUT;
+    if (wait_for_state(0, 120) == -1) goto timeout;
     // Chờ DHT11 kéo lên
-    if (wait_for_state(1, 80) == -1) return ESP_ERR_TIMEOUT;
+    if (wait_for_state(1, 120) == -1) goto timeout;
     // Chờ bắt đầu truyền dữ liệu
-    if (wait_for_state(0, 80) == -1) return ESP_ERR_TIMEOUT;
+    if (wait_for_state(0, 120) == -1) goto timeout;
     
     // 3. Đọc 40 bits (5 bytes)
     for (int i = 0; i < 40; i++) {
         // Chờ hết mức LOW
-        if (wait_for_state(1, 50) == -1) return ESP_ERR_TIMEOUT;
+        if (wait_for_state(1, 100) == -1) goto timeout;
         
         // Đo thời gian mức HIGH để xác định bit 0 hay 1
-        int high_time = wait_for_state(0, 70);
-        if (high_time == -1) return ESP_ERR_TIMEOUT;
+        int high_time = wait_for_state(0, 120);
+        if (high_time == -1) goto timeout;
         
         if (high_time > 40) {
             // Bit 1
@@ -72,6 +73,8 @@ esp_err_t dht11_read(float *temperature, float *humidity) {
         }
     }
     
+    taskEXIT_CRITICAL(&dht_lock);
+
     // 4. Kiểm tra Checksum
     if (data[4] != ((data[0] + data[1] + data[2] + data[3]) & 0xFF)) {
         return ESP_ERR_INVALID_CRC;
@@ -82,4 +85,8 @@ esp_err_t dht11_read(float *temperature, float *humidity) {
     *temperature = data[2];
     
     return ESP_OK;
+
+timeout:
+    taskEXIT_CRITICAL(&dht_lock);
+    return ESP_ERR_TIMEOUT;
 }

@@ -1,6 +1,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "nvs_flash.h"
 
 // Goi file cau hinh de nhan dien cac chan GPIO (Rat quan trong)
 #include "config.h"
@@ -32,8 +33,37 @@ typedef struct {
     bool has_data;
 } firebase_sensor_snapshot_t;
 
-static firebase_sensor_snapshot_t s_sensor_snapshot = {0};
+static firebase_sensor_snapshot_t s_sensor_snapshot = {
+    .light_percent = -1,
+    .soil_moisture_percent = -1,
+    .water_level_percent = -1,
+    .mq2_signal_percent = -1,
+};
 static portMUX_TYPE s_sensor_spinlock = portMUX_INITIALIZER_UNLOCKED;
+
+// Mac dinh tu dong; lenh thu cong het han neu mat ket noi Firebase.
+static firebase_pump_control_t s_pump_control = {.automatic = true, .manual_on = false};
+static TickType_t s_pump_control_updated;
+static portMUX_TYPE s_pump_control_spinlock = portMUX_INITIALIZER_UNLOCKED;
+
+static void firebase_pump_control_task(void *pvParameters)
+{
+    (void)pvParameters;
+    while (1) {
+        firebase_pump_control_t control;
+        esp_err_t err = firebase_get_pump_control(&control);
+        if (err == ESP_OK) {
+            TickType_t now = xTaskGetTickCount();
+            taskENTER_CRITICAL(&s_pump_control_spinlock);
+            s_pump_control = control;
+            s_pump_control_updated = now;
+            taskEXIT_CRITICAL(&s_pump_control_spinlock);
+        } else {
+            ESP_LOGW(TAG, "Khong doc duoc lenh dieu khien bom: %s", esp_err_to_name(err));
+        }
+        vTaskDelay(pdMS_TO_TICKS(3000));
+    }
+}
 
 static void firebase_upload_task(void *pvParameters)
 {
@@ -83,6 +113,22 @@ static int adc_to_percent(int adc_value) {
 void app_main(void){
     ESP_LOGI(TAG, "Khoi dong he thong SmartPlan");
 
+    // Khoi tao Flash NVS va doc du lieu do gan nhat da luu truoc khi mat nguon
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+    if (firebase_restore_last_sensor_data() == ESP_OK) {
+        firebase_get_last_sensor_data(&s_sensor_snapshot.light_percent,
+                                      &s_sensor_snapshot.soil_moisture_percent,
+                                      &s_sensor_snapshot.water_level_percent,
+                                      &s_sensor_snapshot.mq2_signal_percent,
+                                      &s_sensor_snapshot.temperature_c,
+                                      &s_sensor_snapshot.humidity_percent,
+                                      &s_sensor_snapshot.dht11_valid);
+    }
+
     esp_err_t wifi_init_result = wifi_init();
     if (wifi_init_result != ESP_OK) {
         ESP_LOGW(TAG, "Khoi tao Wi-Fi loi (%s); van tiep tuc doc cam bien",
@@ -131,6 +177,9 @@ void app_main(void){
 
     // Tao FreeRTOS task rieng voi stack 8KB de day du lieu len Firebase ma khong chan vong lap cam bien
     xTaskCreate(firebase_upload_task, "fb_upload_task", 8192, NULL, 5, NULL);
+    if (xTaskCreate(firebase_pump_control_task, "fb_pump_task", 8192, NULL, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Khong tao duoc task doc lenh may bom");
+    }
 
     ESP_LOGI(TAG, "Bat dau doc gia tri toan bo cam bien...");
 
@@ -157,20 +206,29 @@ void app_main(void){
             // Cam bien hien tai cho gia tri ADC cao khi dat kho, nen dao chieu phan tram.
             soil_moisture_percent = 100 - adc_to_percent(GIA_TRI_DO_AM);
             ESP_LOGI(TAG, "Do am dat (uoc tinh): %d%%", soil_moisture_percent);
-            
-            // Logic bom nuoc tu dong
-            if (GIA_TRI_DO_AM > NGUONG_DAT_KHO) {
-                ESP_LOGW(TAG, "CANH BAO: Dat qua kho (%d%%)! Dang bat may bom...", soil_moisture_percent);
-                maybom_on(MAYBOM_PIN);
-                pump_is_on = 1;
-            } else {
-                ESP_LOGI(TAG, "Dat du am, tat may bom.");
-                maybom_off(MAYBOM_PIN);
-                pump_is_on = 0;
-            }
         } else {
             ESP_LOGW(TAG, "Khong the doc du lieu tu cam bien do am dat");
         }
+
+        firebase_pump_control_t control;
+        TickType_t control_updated;
+        taskENTER_CRITICAL(&s_pump_control_spinlock);
+        control = s_pump_control;
+        control_updated = s_pump_control_updated;
+        taskEXIT_CRITICAL(&s_pump_control_spinlock);
+
+        bool desired_on;
+        if (control.automatic) {
+            // Khi loi cam bien, tat bom thay vi giu trang thai bat cu.
+            desired_on = GIA_TRI_DO_AM >= 0 && GIA_TRI_DO_AM > NGUONG_DAT_KHO;
+        } else {
+            bool command_fresh = (TickType_t)(xTaskGetTickCount() - control_updated) < pdMS_TO_TICKS(30000);
+            desired_on = command_fresh && control.manual_on;
+            if (!command_fresh) ESP_LOGW(TAG, "Lenh thu cong het han, tat bom");
+        }
+        if (desired_on) maybom_on(MAYBOM_PIN);
+        else maybom_off(MAYBOM_PIN);
+        pump_is_on = desired_on;
 
         // p3: Doc cam bien muc nuoc
         int GIA_TRI_MUC_NUOC = mucnuoc_read(my_adc_handle, MUCNUOC_CHANNEL);
@@ -199,25 +257,36 @@ void app_main(void){
         float do_am = 0.0f;
         int dht11_valid = 0;
 
-        if(dht11_read(&nhiet_do, &do_am) == ESP_OK){
+        esp_err_t dht_err = dht11_read(&nhiet_do, &do_am);
+        if(dht_err == ESP_OK){
             dht11_valid = 1;
             ESP_LOGI(TAG, "Nhiet do: %.1f C | Do am: %.1f%%", nhiet_do, do_am);
         }else{
-            ESP_LOGW(TAG, "Khong the doc du lieu tu DHT11");
+            ESP_LOGW(TAG, "Khong the doc du lieu tu DHT11: %s", esp_err_to_name(dht_err));
         }
 
-        // Cap nhat snapshot du lieu moi nhat cho firebase_upload_task
+        // Giu gia tri hop le cuoi cung khi mot cam bien khong doc duoc.
         taskENTER_CRITICAL(&s_sensor_spinlock);
-        s_sensor_snapshot.light_percent = light_percent;
-        s_sensor_snapshot.soil_moisture_percent = soil_moisture_percent;
-        s_sensor_snapshot.water_level_percent = water_level_percent;
-        s_sensor_snapshot.mq2_signal_percent = mq2_signal_percent;
-        s_sensor_snapshot.temperature_c = nhiet_do;
-        s_sensor_snapshot.humidity_percent = do_am;
-        s_sensor_snapshot.dht11_valid = (dht11_valid != 0);
+        if (light_percent >= 0) s_sensor_snapshot.light_percent = light_percent;
+        if (soil_moisture_percent >= 0) s_sensor_snapshot.soil_moisture_percent = soil_moisture_percent;
+        if (water_level_percent >= 0) s_sensor_snapshot.water_level_percent = water_level_percent;
+        if (mq2_signal_percent >= 0) s_sensor_snapshot.mq2_signal_percent = mq2_signal_percent;
+        if (dht11_valid) {
+            s_sensor_snapshot.temperature_c = nhiet_do;
+            s_sensor_snapshot.humidity_percent = do_am;
+            s_sensor_snapshot.dht11_valid = true;
+        }
         s_sensor_snapshot.pump_is_on = (pump_is_on != 0);
         s_sensor_snapshot.has_data = true;
+        firebase_sensor_snapshot_t latest = s_sensor_snapshot;
         taskEXIT_CRITICAL(&s_sensor_spinlock);
+
+        firebase_save_last_sensor_data(
+            latest.light_percent, latest.soil_moisture_percent,
+            latest.water_level_percent, latest.mq2_signal_percent,
+            latest.temperature_c, latest.humidity_percent,
+            latest.dht11_valid, latest.pump_is_on
+        );
 
         ESP_LOGI(TAG, "-----------------------------------");
         vTaskDelay(pdMS_TO_TICKS(3000));
