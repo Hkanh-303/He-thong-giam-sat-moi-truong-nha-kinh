@@ -9,7 +9,7 @@ typedef struct {
     bool manual_on;
 } firebase_pump_control_t;
 
-/* Doc lenh cua app tu node1/pump_control. */
+/* Doc lenh cua app tu node1/sensor/pump. */
 esp_err_t firebase_get_pump_control(firebase_pump_control_t *control);
 
 esp_err_t firebase_send_sensor_data(int light_percent,

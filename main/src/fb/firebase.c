@@ -39,7 +39,7 @@ typedef struct {
 /* URL goc Realtime Database cua ban */
 #define FIREBASE_BASE_URL    "https://pi4-iot-1b7bb-default-rtdb.asia-southeast1.firebasedatabase.app"
 #define FIREBASE_SENSOR_URL  FIREBASE_BASE_URL "/node1/sensor.json"
-#define FIREBASE_PUMP_CONTROL_URL FIREBASE_BASE_URL "/node1/pump_control.json"
+#define FIREBASE_PUMP_CONTROL_URL FIREBASE_BASE_URL "/node1/sensor/pump.json"
 
 /* POST tao mot ID moi cho moi lan luu lich su. */
 #define FIREBASE_HISTORY_URL FIREBASE_BASE_URL "/node1/history.json"
@@ -293,7 +293,7 @@ static esp_err_t history_response_handler(esp_http_client_event_t *event)
 }
 
 typedef struct {
-    char data[256];
+    char data[1024];
     size_t length;
     bool overflow;
 } pump_response_t;
@@ -342,15 +342,16 @@ esp_err_t firebase_get_pump_control(firebase_pump_control_t *control)
     firebase_pump_control_t next = {.automatic = true, .manual_on = false};
     if (!cJSON_IsNull(json)) {
         const cJSON *mode = cJSON_GetObjectItemCaseSensitive(json, "mode");
-        const cJSON *manual_on = cJSON_GetObjectItemCaseSensitive(json, "manual_on");
+        const cJSON *command = cJSON_GetObjectItemCaseSensitive(json, "command");
         if (!cJSON_IsObject(json) || !cJSON_IsString(mode) ||
             (strcmp(mode->valuestring, "auto") != 0 && strcmp(mode->valuestring, "manual") != 0) ||
-            !cJSON_IsBool(manual_on)) {
+            !cJSON_IsString(command) ||
+            (strcmp(command->valuestring, "on") != 0 && strcmp(command->valuestring, "off") != 0)) {
             cJSON_Delete(json);
             return ESP_ERR_INVALID_RESPONSE;
         }
         next.automatic = strcmp(mode->valuestring, "auto") == 0;
-        next.manual_on = cJSON_IsTrue(manual_on);
+        next.manual_on = strcmp(command->valuestring, "on") == 0;
     }
     cJSON_Delete(json);
     *control = next;
