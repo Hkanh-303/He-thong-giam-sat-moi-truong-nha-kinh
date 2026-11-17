@@ -98,6 +98,17 @@ Mở trình duyệt bất kỳ cùng mạng Wi-Fi và truy cập `http://<IP_ESP
   - `POST /api/pump?action=on|off|auto` (hoặc `GET`): Điều khiển bật/tắt hoặc đặt chế độ tự động cho máy bơm.
   - `POST /api/clear`: Xóa toàn bộ lịch sử log trên RAM.
 
+## Thiết lập Wi-Fi lần đầu
+
+- Khi chưa có Wi-Fi lưu trong flash, ESP32 phát mạng `SmartPlan-XXXXXX`.
+- Xem log Serial sau khi khởi động để lấy tên mạng và mật khẩu AP riêng của bo mạch.
+- Kết nối điện thoại/máy tính vào AP đó, mở `http://192.168.4.1`, chọn Wi-Fi 2.4 GHz trong danh sách quét được và nhập mật khẩu.
+- ESP32 chỉ lưu cấu hình mới sau khi kết nối thành công. Nếu nhập sai, portal tiếp tục mở để thử lại.
+- Nếu Wi-Fi đã lưu không kết nối được trong 20 giây sau khi khởi động, ESP32 tự bật lại AP cấu hình.
+- Sau khi kết nối thành công, thiết bị chờ 5 giây để trang báo kết quả rồi tắt AP và chạy Wi-Fi bình thường.
+
+Trang cấu hình hiện yêu cầu người dùng mở địa chỉ `192.168.4.1` thủ công; captive portal tự bật chưa được triển khai.
+
 ## Điều khiển máy bơm qua ứng dụng
 
 Ứng dụng ghi ít nhất hai trường vào Firebase Realtime Database tại `node1/sensor/pump`:
