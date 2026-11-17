@@ -56,6 +56,8 @@ static const char *TAG = "FIREBASE";
 typedef struct {
     int light_percent;
     int soil_moisture_percent;
+    int soil_adc_raw;
+    bool soil_calibrated;
     int water_level_percent;
     int mq2_signal_percent;
     float temperature_c;
@@ -339,10 +341,11 @@ esp_err_t firebase_get_pump_control(firebase_pump_control_t *control)
 
     cJSON *json = cJSON_Parse(response.data);
     if (json == NULL) return ESP_FAIL;
-    firebase_pump_control_t next = {.automatic = true, .manual_on = false};
+    firebase_pump_control_t next = {.automatic = true, .manual_on = false, .updated_ts = 0};
     if (!cJSON_IsNull(json)) {
         const cJSON *mode = cJSON_GetObjectItemCaseSensitive(json, "mode");
         const cJSON *command = cJSON_GetObjectItemCaseSensitive(json, "command");
+        const cJSON *ts = cJSON_GetObjectItemCaseSensitive(json, "updated_ts");
         if (!cJSON_IsObject(json) || !cJSON_IsString(mode) ||
             (strcmp(mode->valuestring, "auto") != 0 && strcmp(mode->valuestring, "manual") != 0) ||
             !cJSON_IsString(command) ||
@@ -352,10 +355,25 @@ esp_err_t firebase_get_pump_control(firebase_pump_control_t *control)
         }
         next.automatic = strcmp(mode->valuestring, "auto") == 0;
         next.manual_on = strcmp(command->valuestring, "on") == 0;
+        if (cJSON_IsNumber(ts)) {
+            next.updated_ts = ts->valuedouble;
+        }
     }
     cJSON_Delete(json);
     *control = next;
     return ESP_OK;
+}
+
+esp_err_t firebase_set_pump_control(bool automatic, bool manual_on)
+{
+    if (!wifi_is_connected()) return ESP_ERR_INVALID_STATE;
+    char payload[180];
+    snprintf(payload, sizeof(payload),
+             "{\"mode\":\"%s\",\"command\":\"%s\",\"manual_override\":%s,\"updated_by\":\"web_esp32\",\"updated_ts\":{\".sv\":\"timestamp\"}}",
+             automatic ? "auto" : "manual",
+             manual_on ? "on" : "off",
+             automatic ? "false" : "true");
+    return send_to_firebase(FIREBASE_PUMP_CONTROL_URL, HTTP_METHOD_PATCH, payload, strlen(payload), "node1/sensor/pump");
 }
 
 /* De danh mot cho trong 100 ban ghi truoc khi them lich su moi. */
@@ -380,6 +398,9 @@ static esp_err_t make_room_in_history(void)
         esp_http_client_cleanup(client);
         if (err != ESP_OK || status < 200 || status >= 300 || response.failed) {
             ESP_LOGE(TAG, "Khong the doc lich su Firebase (HTTP %d)", status);
+            if (status >= 400 && response.data != NULL) {
+                ESP_LOGE(TAG, "Chi tiet Firebase: %.256s", response.data);
+            }
             free(response.data);
             return err != ESP_OK ? err : ESP_FAIL;
         }
@@ -447,8 +468,19 @@ esp_err_t firebase_send_sensor_data(int light_percent,
                                     float temperature_c,
                                     float humidity_percent,
                                     bool dht11_valid,
-                                    bool pump_is_on)
+                                    bool pump_is_on,
+                                    int soil_adc_raw,
+                                    bool soil_calibrated)
 {
+    if (soil_adc_raw < 0) {
+        soil_moisture_percent = -1;
+    } else if (soil_moisture_percent < 0) {
+        soil_moisture_percent = 0;
+    } else if (soil_moisture_percent > 100) {
+        soil_moisture_percent = 100;
+    }
+    if (!isfinite(temperature_c) || !isfinite(humidity_percent)) dht11_valid = false;
+
     if (!wifi_is_connected()) {
         ESP_LOGW(TAG, "Khong gui Firebase: Wi-Fi chua ket noi");
         return ESP_ERR_INVALID_STATE;
@@ -462,14 +494,16 @@ esp_err_t firebase_send_sensor_data(int light_percent,
     if (!has_sensor_data_changed(&s_last_sent, light_percent, soil_moisture_percent,
                                  water_level_percent, mq2_signal_percent,
                                  temperature_c, humidity_percent,
-                                 dht11_valid, pump_is_on)) {
+                                 dht11_valid, pump_is_on) &&
+        s_last_sent.soil_adc_raw == soil_adc_raw &&
+        s_last_sent.soil_calibrated == soil_calibrated) {
         ESP_LOGI(TAG, "Du lieu cam bien khong thay doi, bo qua khong luu len Firebase.");
         return ESP_OK;
     }
 
-    // Khong gui null: Firebase PATCH se xoa truong neu nhan gia tri null.
-    // Neu chua tung doc duoc cam bien, giu nguyen truong hien co tren Firebase.
-    char payload[384];
+    // PATCH null xóa trường cũ khi cảm biến lỗi hoặc đất chưa hiệu chỉnh.
+    // Các cờ trạng thái luôn được gửi để app phân biệt dữ liệu chưa sẵn sàng.
+    char payload[512];
     char *cursor = payload;
     size_t remaining = sizeof(payload);
     int written = snprintf(cursor, remaining, "{");
@@ -482,8 +516,17 @@ esp_err_t firebase_send_sensor_data(int light_percent,
         cursor += written; \
         remaining -= (size_t)written; \
     } while (0)
-    if (dht11_valid) APPEND_FIELD("\"temperature\":%.1f,\"humidity\":%.1f,", temperature_c, humidity_percent);
+    APPEND_FIELD("\"dht11_valid\":%s,", dht11_valid ? "true" : "false");
+    if (dht11_valid) {
+        APPEND_FIELD("\"temperature\":%.1f,\"humidity\":%.1f,", temperature_c, humidity_percent);
+    } else {
+        APPEND_FIELD("\"temperature\":null,\"humidity\":null,");
+    }
+    APPEND_FIELD("\"soil_calibrated\":%s,", soil_calibrated ? "true" : "false");
+    if (soil_adc_raw >= 0) APPEND_FIELD("\"soil_adc\":%d,", soil_adc_raw);
+    else APPEND_FIELD("\"soil_adc\":null,");
     if (soil_moisture_percent >= 0) APPEND_FIELD("\"soil_moisture\":%d,", soil_moisture_percent);
+    else APPEND_FIELD("\"soil_moisture\":null,");
     if (light_percent >= 0) APPEND_FIELD("\"light\":%d,", light_percent);
     if (water_level_percent >= 0) APPEND_FIELD("\"water_level\":%d,", water_level_percent);
     if (mq2_signal_percent >= 0) APPEND_FIELD("\"gas_mq2\":%d,", mq2_signal_percent);
@@ -513,6 +556,8 @@ esp_err_t firebase_send_sensor_data(int light_percent,
         // Luu lai gia tri moi nhat vua gui de so sanh o chu ky sau
         s_last_sent.light_percent = light_percent;
         s_last_sent.soil_moisture_percent = soil_moisture_percent;
+        s_last_sent.soil_adc_raw = soil_adc_raw;
+        s_last_sent.soil_calibrated = soil_calibrated;
         s_last_sent.water_level_percent = water_level_percent;
         s_last_sent.mq2_signal_percent = mq2_signal_percent;
         s_last_sent.temperature_c = temperature_c;

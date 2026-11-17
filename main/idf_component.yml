@@ -1,0 +1,4 @@
+dependencies:
+  idf: ">=5.3"
+  esp-idf-lib/dht: "1.2.0"
+  esp-idf-lib/esp_idf_lib_helpers: "1.4.0"

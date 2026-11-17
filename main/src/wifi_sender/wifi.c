@@ -13,8 +13,8 @@
 #include "freertos/event_groups.h"
 
 /* Thay bang thong tin Wi-Fi cua ban. Khong commit mat khau that len Git. */
-#define WIFI_SSID       "LAB_DTVT_SV"
-#define WIFI_PASSWORD   "Labdtvt@109"
+#define WIFI_SSID       "ETLAB"
+#define WIFI_PASSWORD   "Labet@109b5"
 
 #define WIFI_CONNECTED_BIT BIT0
 

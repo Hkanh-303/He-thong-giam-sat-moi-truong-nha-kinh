@@ -7,10 +7,14 @@
 typedef struct {
     bool automatic;
     bool manual_on;
+    double updated_ts;
 } firebase_pump_control_t;
 
 /* Doc lenh cua app tu node1/sensor/pump. */
 esp_err_t firebase_get_pump_control(firebase_pump_control_t *control);
+
+/* Cap nhat trang thai lenh bom len node1/sensor/pump. */
+esp_err_t firebase_set_pump_control(bool automatic, bool manual_on);
 
 esp_err_t firebase_send_sensor_data(int light_percent,
                                     int soil_moisture_percent,
@@ -19,7 +23,9 @@ esp_err_t firebase_send_sensor_data(int light_percent,
                                     float temperature_c,
                                     float humidity_percent,
                                     bool dht11_valid,
-                                    bool pump_is_on);
+                                    bool pump_is_on,
+                                    int soil_adc_raw,
+                                    bool soil_calibrated);
 
 /* Khoi phuc du lieu do gan nhat va bo dem tu Flash NVS sau khi mat nguon */
 esp_err_t firebase_restore_last_sensor_data(void);
